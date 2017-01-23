@@ -1,0 +1,550 @@
+#written in R
+#Data to run the code is all in the shared Google Drive folder
+#Cleans census data, cause of death data, diagnosis data
+#Makes Shiny app to display cause of death data
+#App runs at https://dlab.shinyapps.io/TanzaniaHealthOutcomes/
+
+library(dplyr)
+library(readxl)
+library(tidyr)
+library(maptools)
+library(tmap)
+library(leaflet)
+library(readxl)
+library(scales)
+library(RColorBrewer)
+library(shiny)
+library(gtools)
+library(rsconnect)
+library(DT)
+
+#IMPORT POPULATION DATA 
+
+TotalCensus <- read_excel("Census_Long_ByDistrict.xls")
+TotalCensus$Region <- as.factor(TotalCensus$Region)
+TotalCensus$District <- as.factor(TotalCensus$District)
+TotalCensus$Residence <- as.factor(TotalCensus$Residence)
+TotalCensus$Sex <- as.factor(TotalCensus$Sex)
+TotalCensus$`Age Group` <- as.factor(TotalCensus$`Age Group`)
+TotalCensus$Source <- as.factor(TotalCensus$Source)
+
+
+#Aggregate population data
+
+Census2012 <- TotalCensus %>% 
+  select(-District) %>%
+  filter(Year==2012) %>%
+  filter(Source=="Mainland") %>%
+  arrange(Region, Residence, Sex, `Age Group`) %>%
+  #  group_by(Region, Residence, Sex, `Age Group`, Source) %>%
+  #  summarize_each_(funs(sum), vars(Total))     #2012 census, regional level, disaggregated by age, gender, residence
+  #  group_by(Region, Residence, `Age Group`) %>%
+  #  summarize_each_(funs(sum), vars(Total))     #2012 census, regional level, disaggregated by age, residence
+  group_by(Region, `Age Group`) %>%
+  summarize_each_(funs(sum), vars(Total))       #2012 census, regional level, disaggregated by age
+
+CensusUnder5 <- Census2012 %>%
+  filter(`Age Group`=='0-4')
+
+CensusOver5 <- Census2012 %>%
+  filter(`Age Group`!='0-4') %>%
+  select(-`Age Group`) %>%
+  group_by(Region) %>%
+  summarize_each_(funs(sum), vars(Total))
+
+
+#IMPORT HEALTH DATA
+
+InDiag2013Under5 <- read.csv("IPD-Under-5-years-2013.csv")
+InDiag2013Over5 <- read.csv("IPD-Above-5-years-2013.csv")
+OutDiag2013Under5 <-read.csv("OPD-Under-5-years-2013.csv")
+OutDiag2013Over5 <- read.csv("OPD-Above-5-years-2013.csv")
+Death2013Under5 <- read.csv("Death-Under-5-years---2013.csv")
+Death2013Over5 <- read.csv("Death-Above-5-years---2013.csv")
+
+#Sort these by region alphbetically 
+InDiag2013Over5 <- InDiag2013Over5 %>% arrange(Region)
+InDiag2013Under5 <- InDiag2013Under5 %>% arrange(Region)
+OutDiag2013Under5 <- OutDiag2013Under5 %>% arrange(Region)
+OutDiag2013Over5 <- OutDiag2013Over5 %>% arrange(Region)
+Death2013Under5 <- Death2013Under5 %>% arrange(Region)
+Death2013Over5 <- Death2013Over5 %>% arrange(Region)
+
+
+
+#CONSISTENT DIAGNOSES ACROSS DATAFRAMES
+VarList <- c(colnames(InDiag2013Over5), colnames(InDiag2013Under5), colnames(OutDiag2013Over5), colnames(OutDiag2013Under5),
+             colnames(Death2013Over5), colnames(Death2013Under5))
+SortVarList <- data.frame(as.character(unique(sort(VarList))))        #alphabetize and remove duplicates
+
+#manually go through and remove repeats 
+Exclude <- c(3, 8, 10, 15, 16, 22, 25, 26, 32:34, 36, 39:41, 45, 46, 48, 49, 50, 54, 56, 58:60, 
+            62:65, 67, 68, 69, 70, 71, 75, 79, 83, 84, 87, 89, 90, 92, 97, 98, 100, 104, 105, 107, 108)
+DiagList <- (SortVarList[-Exclude,])
+DiagList <- as.character(DiagList)
+#this forms the basis for the complete list of diagnoses 
+
+#complete list of diagnoses
+NameDiagList <- c("Region", "Age", "Status", "Population",  "Acute Respiratory Infection", "Bronchial Asthma", "Pneumonia", "Tuberculosis", "Other Respiratory Disease",
+                     "Cardiac Failure", "Hypertension", "Other Cardiovascular Disease",
+                     "Anemia", "Congenital Disease", "Diabetes Mellitus", "Epilepsy", "Gastrointestinal Disease_Noninfectious", "Hematological Disease", "Malnutrition", "Neoplasms", "Peptic Ulcer", "Sickle Disease", "Thyroid Disease", 
+                     "Diarrheal Disease", "Fungal Disease", "Hepatitis", "HIV/AIDS", "Intestinal Worms", "Leprosy", "Malaria", "Osteomyelitis",  "Rheumatic Fever", "Schistosomiasis", "Typanosomiasis",
+                     "Genital Discharge Syndrome", "Genital Ulcer Disease", "Other Sexually Transmitted Infections",
+                     "Pregnancy Complications", "Perinatal Disease",
+                     "Cataracts", "Xerophthalmia", "Eye Infections", "Eye Disease_Noninfectious", #"Other Eye Disease",
+                     "Skin Infection", "Skin Disease_Noninfectious",
+                     "Ear Infection",
+                     "Kidney Disease_Noninfectious", "Urinary Tract Infection",
+                     "Dental Caries", "Periodontal Disease", "Other Oral Disease",
+                     "Bites_Snake and Insect", "Burns", "Fractures and Dislocations", "Joint or Rhematoid Disease", "Poisoning",
+                     "Neuroses", "Psychoses",
+                     "Minor Surgical Conditions", "Not Diagnosed or Other")
+
+#A column of NAs to use wherever needed
+Blank <- InDiag2013Over5$Region1
+Regions <- InDiag2013Over5$Region
+
+#Construct ordered dfs
+CleanInDiag2013Over5 <- data.frame(Regions, ">5", "Inpatient", CensusOver5$Total,
+                              InDiag2013Over5$Acute.Respiratory.Infections, InDiag2013Over5$Bronchial.Asthma, InDiag2013Over5$Pneumonia, InDiag2013Over5$Tuberculosis, InDiag2013Over5$Respiratory.Disease..Nyinginezo.,
+                              InDiag2013Over5$Cardiac.Failure, InDiag2013Over5$Hypertension, InDiag2013Over5$Other.Cardiovascular.Diseases,
+                              InDiag2013Over5$Anaemia, InDiag2013Over5$Congenital.Diseases, InDiag2013Over5$Diabetes.Mellitus, InDiag2013Over5$Epilepsy, InDiag2013Over5$Non.Infectious.Gastrointestinal.Diseases..Others., 
+                              InDiag2013Over5$Hematological.Diseases, InDiag2013Over5$Severe.Protein.Ernegy.Malnut.+InDiag2013Over5$Nutritional.Disorders..toa.PEM., InDiag2013Over5$Neoplasms, InDiag2013Over5$Peptic.Ulcers, InDiag2013Over5$Sickle.Disease, InDiag2013Over5$Thyroid.Diseases,
+                              InDiag2013Over5$Diarrhoeal.Diseases, Blank, InDiag2013Over5$Hepatitis, InDiag2013Over5$HIV.AIDS, InDiag2013Over5$Intestinal.Worms, InDiag2013Over5$Leprosy, InDiag2013Over5$Malaria..Uncomplicated+InDiag2013Over5$Malaria..Severe..Complicated,
+                              InDiag2013Over5$Osteomyelitis, InDiag2013Over5$Rheumatic.Fever, InDiag2013Over5$Schistosomiasis, Blank,
+                              InDiag2013Over5$GDS, InDiag2013Over5$GUD, InDiag2013Over5$Other.Sex.Tras..Dis..toa.GDS...GUD., 
+                              Blank, InDiag2013Over5$Peri.neonatal.Conditions,
+                              InDiag2013Over5$Cataract, InDiag2013Over5$Vitamin.A.Defc.Xerophthalmia, InDiag2013Over5$Eye.Infections, InDiag2013Over5$Other.Eye.Diseases.Non.Inf.,
+                              InDiag2013Over5$Skin.Infections, InDiag2013Over5$Skin.Diseases.Non.Infectious,
+                              InDiag2013Over5$Ear.Infections, 
+                              InDiag2013Over5$Non.Infectious.Kidny.diseases, InDiag2013Over5$Urinary.tract.Infections..UTI.,
+                              Blank, Blank, Blank,
+                              InDiag2013Over5$Snake.and.Insect.Bites, InDiag2013Over5$Burns, InDiag2013Over5$Fractures.Dislocation, InDiag2013Over5$Rheumatoid.or.Joint.Diseases, InDiag2013Over5$Poisoning,
+                              InDiag2013Over5$Neuroses, InDiag2013Over5$Psychoses,
+                              Blank, InDiag2013Over5$Ill.Defined.Symptoms..no.Diagnosis+InDiag2013Over5$Others..Taja.)
+
+names(CleanInDiag2013Over5) <- NameDiagList
+
+
+CleanInDiag2013Under5 <- data.frame(Regions, "<5", "Inpatient", CensusUnder5$Total,
+                        InDiag2013Under5$Acute.Respiratory.Infections, InDiag2013Under5$Bronchial.Asthma, InDiag2013Under5$Pneumonia, InDiag2013Under5$Tuberculosis, InDiag2013Under5$Respiratory.Disease..Nyinginezo.,
+                        InDiag2013Under5$Cardiac.Failure, Blank, InDiag2013Under5$Other.Cardiovascular,
+                        InDiag2013Under5$Anaemia, InDiag2013Under5$Congenital.Diseases, InDiag2013Under5$Diabetes.Mellitus, InDiag2013Under5$Epilepsy,
+                        InDiag2013Under5$Non.Inf..Gastrointestinal.Diseases..Others., InDiag2013Under5$Haematological.Diseases..Toa.anaemia., InDiag2013Under5$Severe.Protein.Ernegy.Malnut.+InDiag2013Under5$Other.Nutritional.Disorders..toa.PEM.,
+                        InDiag2013Under5$Neoplasms, Blank, InDiag2013Under5$Sickle..cell.Disease, InDiag2013Under5$Thyroid.Diseases,
+                        InDiag2013Under5$Diarrhoeal.Diseases, Blank, Blank, InDiag2013Under5$HIV.AIDS, InDiag2013Under5$Intestinal.Worms, Blank, InDiag2013Under5$Malaria..Uncomplicated+InDiag2013Under5$Malaria..Severe.Complicated,
+                        InDiag2013Under5$Osteomyelitis, InDiag2013Under5$Rheumatic.Fever, InDiag2013Under5$Schistosomiasis, Blank,
+                        Blank, Blank, Blank,
+                        Blank, InDiag2013Under5$Peri.natal.Conditions,
+                        Blank, InDiag2013Under5$Vitamin.A.Defc.Xerophthalmia, InDiag2013Under5$Eye.Infections, InDiag2013Under5$Other.Eye.Diseases,
+                        InDiag2013Under5$Skin.Infections, InDiag2013Under5$Skin.Diseases.Non.Infectious,
+                        InDiag2013Under5$Ear.Infections,
+                        InDiag2013Under5$Non.Inf..Kidney.Diseases, InDiag2013Under5$Urinary.tract.Infections..UTI.,
+                        Blank, Blank, Blank,
+                        InDiag2013Under5$Snake.and.Insect.Bites, InDiag2013Under5$Burns, InDiag2013Under5$Fractures.Dislocation, InDiag2013Under5$Joint.Disorders, InDiag2013Under5$Poisoning,
+                        Blank, Blank,
+                        Blank, InDiag2013Under5$Ill.Defined.Symtoms.no.Diagnosis+InDiag2013Under5$Others..Taja.)
+names(CleanInDiag2013Under5) <- NameDiagList
+
+
+odo5<- OutDiag2013Over5
+CleanOutDiag2013Over5 <-data.frame(Regions, ">5", "Outpatient", CensusOver5$Total,
+                                  odo5$ARI, odo5$Bronchial.Asthma, odo5$Pneumonia, odo5$Tuberculosis, Blank,
+                                  Blank, odo5$Hypertension+odo5$Cardiovascular.Hypertension, odo5$Other.Cardiovascular.disease,
+                                  odo5$Anaemia, Blank, odo5$Diabetes.Mellitus, odo5$Epilepsy, odo5$Non...Infectionus.Gastro.intestinal.disease, Blank, odo5$Protein.Energy.Malnutrition+odo5$other.nutritional.Disorders,
+                                  Blank, odo5$Peptic.Ulcers, Blank, odo5$Thyroid.diseases,
+                                  odo5$Diarrhoeal.Disease+odo5$Diarrhoeal.Disease.1, odo5$Non...skin..fungal.disease, Blank, odo5$HIV.AIDS, odo5$Intestinal.Worms, 
+                                  odo5$Leprosy, odo5$Malaria, Blank, Blank, odo5$Schistosomiasis, odo5$Typanosomiasis,
+                                  odo5$Genital.Discharge.Syndrome, odo5$Genital.Ulcer.Disease, odo5$Pelvic.Inflamatory.Disease+odo5$Sexually.Transmitted.Infections+odo5$Other.sexual.transmission,
+                                  odo5$Pregnancy.compl, Blank,
+                                  Blank, odo5$Vitamin.A.Def..Xerophthalmia, odo5$Eye.Infections, odo5$Non.Infectious.Eye.Dis.ukitoa.Vit.A.def..,
+                                  odo5$Skin.Infections, odo5$Non...Infectionus.skin.disease,
+                                  odo5$Ear.Infections,
+                                  Blank, odo5$Urinary.Tract.Infections,
+                                  odo5$Dental.Caries, odo5$periodontal.disease, odo5$Other.Oral.disorders+odo5$Emergency.Oral.care,
+                                  odo5$Snake.and.Insect.bites, odo5$Burns, odo5$Fractures.Dislocation, odo5$Joint.Disorders, odo5$Poisoning,
+                                  odo5$Neuroses, odo5$Psychoses,
+                                  odo5$Minor.surgical.Conditions, odo5$III.Defined.Symptoms...No.Diagnosis.+odo5$Others..Taja.)
+names(CleanOutDiag2013Over5) <- NameDiagList
+
+
+odu5 <- OutDiag2013Under5
+CleanOutDiag2013Under5 <- data.frame(Regions, "<5", "Outpatient", CensusUnder5$Total,
+                                  odu5$ARI, odu5$Bronchial.Asthma, odu5$Pneumonia, odu5$Tuberculosis, Blank,
+                                  Blank, Blank, odu5$Cardiovascular.Diseases,
+                                  odu5$Anaemia, Blank, Blank, odu5$Epilepsy, Blank,
+                                  Blank, odu5$Protein.Energy.Malnutrition+odu5$Other.Nutritional.Disorders, Blank, Blank, Blank, Blank,
+                                  odu5$Diarrhoeal.Disease, Blank, Blank, odu5$HIV.AIDS, odu5$Intestinal.Worms,
+                                  Blank, odu5$Malaria, Blank, Blank, odu5$Schistosomiasis, Blank,
+                                  Blank, Blank, odu5$Sexually.Transmitted.diseases,
+                                  Blank, Blank,
+                                  Blank, odu5$Vitamin.A.Def.Xerophthalmia, odu5$Eye.Infections, odu5$Non.Infectious.Eye.Dis..ukitoa.Vit.A.def..,
+                                  odu5$Skin.Infections, odu5$Non.Infectious.Skin.Disease,
+                                  odu5$Ear.Infections,
+                                  Blank, odu5$Urinary.Tract.Infections,
+                                  odu5$Dental.Caries, Blank, odu5$Other.oral.disorders,
+                                  Blank, odu5$Burns, Blank, odu5$Joint.Disorders, odu5$Poisoning,
+                                  Blank, Blank,
+                                  odu5$Minor.surgical.Conditions, odu5$Ill.Defined.Symptoms..No.diagnosis.+odu5$Others.Taja.)
+names(CleanOutDiag2013Under5) <- NameDiagList
+
+
+deatho5 <- Death2013Over5
+CleanDeath2013Over5 <- data.frame(Regions, ">5", "Death", CensusOver5$Total,
+                              deatho5$Acute.Respiratory.Infections, deatho5$Bronchial.Asthma, deatho5$Pneumonia, deatho5$Tuberculosis,  deatho5$Respiratory.Disease..Nyinginezo.,
+                              deatho5$Cardiac.Failure, deatho5$Hypertension, deatho5$Other.Cardiovascular.Diseases,
+                              deatho5$Anaemia, deatho5$Congenital.Diseases, deatho5$Diabetes.Mellitus, deatho5$Epilepsy, deatho5$Non.Infectious.Gastrointestinal.Diseases..Others.,
+                              deatho5$Hematological.Diseases, deatho5$Severe.Protein.Ernegy.Malnut.+deatho5$Nutritional.Disorders..toa.PEM.,
+                              deatho5$Neoplasms, deatho5$Peptic.Ulcers, deatho5$Sickle.Disease, deatho5$Thyroid.Diseases,
+                              deatho5$Diarrhoeal.Diseases, Blank, deatho5$Hepatitis, deatho5$HIV.AIDS, deatho5$Intestinal.Worms, deatho5$Leprosy, deatho5$Malaria..Uncomplicated+deatho5$Malaria..Severe..Complicated,
+                              deatho5$Osteomyelitis, deatho5$Rheumatic.Fever, deatho5$Schistosomiasis, Blank,
+                              deatho5$GDS, deatho5$GUD, deatho5$Other.Sex.Tras..Dis..toa.GDS...GUD.,
+                              Blank, deatho5$Peri.neonatal.Conditions,
+                              deatho5$Cataract, deatho5$Vitamin.A.Defc.Xerophthalmia, deatho5$Eye.Infections, deatho5$Other.Eye.Diseases.Non.Inf.,
+                              deatho5$Skin.Infections, deatho5$Skin.Diseases.Non.Infectious,
+                              deatho5$Ear.Infections,
+                              deatho5$Non.Infectious.Kidny.diseases, deatho5$Urinary.tract.Infections..UTI.,
+                              Blank, Blank, Blank,
+                              deatho5$Snake.and.Insect.Bites, deatho5$Burns, deatho5$Fractures.Dislocation, deatho5$Rheumatoid.or.Joint.Diseases, deatho5$Poisoning,
+                              deatho5$Neuroses, deatho5$Psychoses,
+                              Blank, deatho5$Ill.Defined.Symptoms..no.Diagnosis+deatho5$Others..Taja.)
+names(CleanDeath2013Over5) <- NameDiagList
+
+
+dunder5 <-Death2013Under5
+CleanDeath2013Under5 <- data.frame(Regions, "<5", "Death", CensusUnder5$Total,
+                              dunder5$Acute.Respiratory.Infections, dunder5$Bronchial.Asthma, dunder5$Pneumonia, dunder5$Tuberculosis, dunder5$Respiratory.Disease..Nyinginezo.,
+                              dunder5$Cardiac.Failure, Blank, dunder5$Other.Cardiovascular,
+                              dunder5$Anaemia, dunder5$Congenital.Diseases, dunder5$Diabetes.Mellitus, dunder5$Epilepsy, dunder5$Non.Inf..Gastrointestinal.Diseases..Others.,
+                              dunder5$Haematological.Diseases..Toa.anaemia., dunder5$Severe.Protein.Ernegy.Malnut.+dunder5$Other.Nutritional.Disorders..toa.PEM., dunder5$Neoplasms, Blank, dunder5$Sickle..cell.Disease, dunder5$Thyroid.Diseases,
+                              dunder5$Diarrhoeal.Diseases, Blank, Blank, dunder5$HIV.AIDS,
+                              dunder5$Intestinal.Worms, Blank, dunder5$Malaria..Uncomplicated+dunder5$Malaria..Severe.Complicated, dunder5$Osteomyelitis,
+                              dunder5$Rheumatic.Fever, dunder5$Schistosomiasis, Blank, 
+                              Blank, Blank, Blank,
+                              Blank, dunder5$Peri.natal.Conditions,
+                              Blank, dunder5$Vitamin.A.Defc.Xerophthalmia, dunder5$Eye.Infections, dunder5$Other.Eye.Diseases,
+                              dunder5$Skin.Infections, dunder5$Skin.Diseases.Non.Infectious,
+                              dunder5$Ear.Infections,
+                              dunder5$Non.Inf..Kidney.Diseases, dunder5$Urinary.tract.Infections..UTI.,
+                              Blank, Blank, Blank,
+                              dunder5$Snake.and.Insect.Bites, dunder5$Burns, dunder5$Fractures.Dislocation, dunder5$Joint.Disorders, dunder5$Poisoning,
+                              Blank, Blank,
+                              Blank, dunder5$Ill.Defined.Symtoms.no.Diagnosis+dunder5$Others..Taja.)
+names(CleanDeath2013Under5) <- NameDiagList
+
+
+
+
+#Decide what the cleanest long form of data is
+#One combined df with Diagnosis/Region/Age/Inpatient/Outpatient/Death/Population
+
+Combined <- rbind(CleanOutDiag2013Under5, CleanOutDiag2013Over5, CleanInDiag2013Under5,
+                  CleanInDiag2013Over5, CleanDeath2013Under5, CleanDeath2013Over5)
+
+Long <- Combined %>% 
+  gather(Diagnosis, Reported, -Region, -Age, -Status, -Population) %>%
+  spread(Status, Reported) 
+Long[is.na(Long)] <- 0
+
+AllDiseases <- as.data.frame(Long %>%
+  group_by(Region, Age) %>%
+  summarise(Population = mean(Population), Diagnosis = "All Diseases", Outpatient = sum(Outpatient), Inpatient = sum(Inpatient), Death = sum(Death))
+  )
+
+Stats <- rbind(AllDiseases, Long)
+
+#GENERATE STATISTICS
+
+#total diagnoses (per disease, inpatient + outpatient)
+Stats$AllCases <- Stats$Inpatient+Stats$Outpatient
+
+#death rate per disease (deaths/(inpatient+outpatient diagnosis))
+Stats$DeathPerDiag <- Stats$Death/Stats$AllCases
+
+#under 5 + over five for combined
+Combined <-Stats %>% 
+  group_by(Region, Diagnosis) %>%
+  summarise(Population=sum(Population), Death = sum(Death), Inpatient = sum(Inpatient), Outpatient = sum(Outpatient), AllCases = sum(AllCases), DeathPerDiag = sum(DeathPerDiag))
+Combined$Age <- "Combined"
+
+AllStats <- rbind.data.frame(Stats, Combined)
+
+#rename
+AllStatNames <- c("Region", "Age", "Population", "Diagnosis", "Outpatient", 
+                  "Inpatient", "Deaths", "Total", "DeathPerDiag")
+names(AllStats) <- AllStatNames
+
+#all numbers per 100,000 population
+AllStats$`Deaths_Per 100000` <- AllStats$Deaths/AllStats$Population*100000
+AllStats$`Inpatient_Per 100000` <- AllStats$`Inpatient`/AllStats$Population*100000
+AllStats$`Outpatient_Per 100000` <- AllStats$`Outpatient`/AllStats$Population*100000
+AllStats$`Total_Per 100000` <- AllStats$`Total`/AllStats$Population*100000
+AllStats$`DeathPerDiag_Per 100000` <- AllStats$`DeathPerDiag`/AllStats$Population*100000
+
+#Admittance rate (Inpatient/Outpatient)
+#Grouped by disease type
+
+#write.csv(Stats, "DiagnosisAndDeathData.csv")
+
+
+#removing population
+WideStats <- AllStats %>%
+  select(-Population) %>%
+  gather(temp, Prevalence, -Region, -Age, -Diagnosis) %>%  #-Region, -Age, -Status, -Population
+  unite(col = Outcome, Age, Diagnosis, temp, sep = "_") %>%
+  spread(key = Outcome, value = Prevalence)
+
+#VISUALIZATION
+
+#Districts <- readShapePoly("GIS_Maps/Districts.shp", 
+#                           proj4string = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"))
+
+RegionMap <- readShapeSpatial("Regions.shp", 
+                            proj4string = CRS("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs"))
+
+#remove Zanzibar, reorder
+
+MainlandMap <- RegionMap[RegionMap@data$Region_Cod != 51,]
+MainlandMap <- MainlandMap[MainlandMap@data$Region_Cod != 52,]
+MainlandMap <- MainlandMap[MainlandMap@data$Region_Cod != 53,]
+MainlandMap <- MainlandMap[MainlandMap@data$Region_Cod != 54,]
+MainlandMap <- MainlandMap[MainlandMap@data$Region_Cod != 55,]
+#I have no idea why it was that fucking difficult to remove those rows
+
+MainlandMap@data$Region_Nam <- as.character(MainlandMap@data$Region_Nam) 
+MainlandMap <- MainlandMap[order(MainlandMap@data$Region_Nam),]
+MainlandMap@data$Region_Nam[2] <- "Dar es Salaam"
+
+WideStats$Region <- as.character(WideStats$Region)
+
+identical(MainlandMap@data$Region_Nam, WideStats$Region)
+
+Map <- append_data(MainlandMap, WideStats, key.shp = "Region_Nam", key.data = "Region")
+
+
+#test <- cbind(Region = Map@data$Region_Nam, fake = Map@data$`Combined_Acute Respiratory Infection_DeathPerDiag`)
+
+#c1 <- c("a", "b", "c")
+#c2 <- c(1, 2, 3)
+#test <- cbind(c1, c2)
+
+#test1 <-  DT::datatable(test, options = list(order = list(2, 'desc')))
+#test2 <-  DT::datatable(test) %>% setkey(c2)
+
+
+#Assembling the map
+
+ui <- fluidPage(
+
+  titlePanel("Health in Tanzania"),
+
+  sidebarLayout(
+    sidebarPanel(
+      #Select disease
+      selectInput("DiseaseSelect", 
+                  label = "Disease",
+                  choices = DiseaseList <- list("All Diseases" = "All Disease",
+                                                "Acute Respiratory Infection" = "Acute Respiratory Infection", 
+                                                "Bronchial Asthma" = "Bronchial Asthma", 
+                                                "Pneumonia" = "Pneumonia", 
+                                                "Tuberculosis" = "Tuberculosis", 
+                                                "Other Respiratory Disease" = "Other Respiratory Disease",
+                                                "Cardiac Failure" = "Cardiac Failure", 
+                                                "Hypertension" = "Hypertension", 
+                                                "Other Cardiovascular Disease" = "Other Cardiovascular Disease",
+                                                "Anemia" = "Anemia", 
+                                                "Congenital Disease" = "Congenital Disease", 
+                                                "Diabetes Mellitus" = "Diabetes Mellitus", 
+                                                "Epilepsy" = "Epilepsy", 
+                                                "Gastrointestinal Disease (Noninfectious)" = "Gastrointestinal Disease_Noninfectious", 
+                                                "Hematological Disease" = "Hematological Disease", 
+                                                "Malnutrition" = "Malnutrition", 
+                                                "Neoplasms" = "Neoplasms", 
+                                                "Peptic Ulcer" = "Peptic Ulcer", 
+                                                "Sickle Disease" = "Sickle Disease", 
+                                                "Thyroid Disease" = "Thyroid Disease", 
+                                                "Diarrheal Disease" = "Diarrheal Disease", 
+                                                "Fungal Disease" = "Fungal Disease", 
+                                                "Hepatitis" = "Hepatitis", 
+                                                "HIV/AIDS" = "HIV/AIDS", 
+                                                "Intestinal Worms" = "Intestinal Worms", 
+                                                "Leprosy" = "Leprosy", 
+                                                "Malaria" = "Malaria", 
+                                                "Osteomyelitis" = "Osteomyelitis",  
+                                                "Rheumatic Fever" = "Rheumatic Fever", 
+                                                "Schistosomiasis" = "Schistosomiasis", 
+                                                "Typanosomiasis" = "Typanosomiasis",
+                                                "Genital Discharge Syndrome" = "Genital Discharge Syndrome", 
+                                                "Genital Ulcer Disease" = "Genital Ulcer Disease", 
+                                                "Other Sexually Transmitted Infections" = "Other Sexually Transmitted Infections",
+                                                "Pregnancy Complications" = "Pregnancy Complications", 
+                                                "Perinatal Disease" = "Perinatal Disease",
+                                                "Cataracts" = "Cataracts", 
+                                                "Xerophthalmia" = "Xerophthalmia", 
+                                                "Eye Infections" = "Eye Infections", 
+                                                "Eye Disease (Noninfectious)" = "Eye Disease_Noninfectious", 
+                                                "Skin Infection" = "Skin Infection", 
+                                                "Skin Disease (Noninfectious)" = "Skin Disease_Noninfectious",
+                                                "Ear Infection" = "Ear Infection",
+                                                "Kidney Disease (Noninfectious)" = "Kidney Disease_Noninfectious", 
+                                                "Urinary Tract Infection" = "Urinary Tract Infection",
+                                                "Dental Caries" = "Dental Caries", 
+                                                "Periodontal Disease" = "Periodontal Disease", 
+                                                "Other Oral Disease" = "Other Oral Disease",
+                                                "Bites (Snake and Insect)" = "Bites_Snake and Insect", 
+                                                "Burns" = "Burns",
+                                                "Fractures and Dislocations" = "Fractures and Dislocations", 
+                                                "Joint or Rhematoid Disease" = "Joint or Rhematoid Disease", 
+                                                "Poisoning" = "Poisoning",
+                                                "Neuroses" = "Neuroses", 
+                                                "Psychoses" = "Psychoses",
+                                                "Minor Surgical Conditions" = "Minor Surgical Conditions", 
+                                                "Not Diagnosed or Other" = "Not Diagnosed or Other"),
+                  selected = 1),
+      #add groups per discussion with Amit
+      #http://shiny.rstudio.com/gallery/option-groups-for-selectize-input.html info here for bolding and grouping ,Maybe "all", "grouped", "individual"
+
+      #Select stats to display
+      selectInput("StatSelect", 
+                  label = "Statistic",
+                  choices = StatList <- list("Total Cases" = "Total",
+                                             "Outpatient Cases" = "Outpatient", 
+                                             "Inpatient Cases" = "Inpatient", 
+                                             "Deaths" = "Deaths",  
+                                             "Deaths Per Diagnosis" = "DeathPerDiag"),
+                  selected = 1),
+      
+      #Select age
+      checkboxGroupInput("AgeSelect",
+                         label = "Age",
+                         choices = list("Under 5" = 1, "Over 5" = 2),
+                         selected = list(1, 2)),
+
+      #Select total vs per 100,000 display
+      radioButtons("RadioGroup",
+                   label = "Display",
+                   choices = list("Per 100,000 People" = 1, "Total" = 2),
+                   selected = 1)
+    ),
+
+    mainPanel(
+      leafletOutput("TZHealthMap"), 
+      DT::dataTableOutput("TabVals")
+      )
+  )
+)
+
+
+server <- function(input, output) {
+  
+  #use the input parameters from the ui to select the data that we want to display
+      #could also have used select() instead of grepl() but ran into trouble
+  SelectedData <- reactive({
+    data.frame(Selection1 <- Map@data[, grepl(input$DiseaseSelect, names(Map@data))])
+    
+    Selection2 <- Selection1[, grepl(input$StatSelect, names(Selection1))]
+    
+    if(1 %in% input$RadioGroup){
+      Selection3 <- Selection2[, grepl("100", names(Selection2))]
+    } else if(2 %in% input$RadioGroup){
+     Selection3 <- Selection2[, !grepl("100", names(Selection2))]
+    }
+    
+    if(1 %in% input$AgeSelect && 2 %in% input$AgeSelect) {
+      Selection4 <- Selection3[, grepl("Combined", names(Selection3)), drop = F]
+    } else if(1 %in% input$AgeSelect) {
+      Selection4 <- Selection3[, grepl("<5", names(Selection3)), drop = F]
+    } else if(2 %in% input$AgeSelect) {
+      Selection4 <- Selection3[, grepl(">5", names(Selection3)), drop = F]
+    }
+  })
+  
+  TableData <- reactive({
+    cbind(Region = Map@data$Region_Nam, SelectedData())
+  })
+  
+  output$TabVals <- DT::renderDataTable({
+    DT::datatable(TableData(), 
+                  options = list(pageLength = 25, 
+                                 searching = FALSE, 
+                                 #order = list(2, 'asc'), #shows best to worst, make this 'des' (I assume) to show opposite
+                                 paging = FALSE),   
+                  rownames = FALSE) %>%
+        formatRound(2, digits = 0)
+  })
+  #make sure that what is left is only one name, otherwise throw some kind of error
+  
+  #generate a color palette based on the domain of the selected data
+  LeafletPalette <- reactive({
+    colorNumeric(palette = rev(brewer.pal(5, "RdYlGn")), domain = SelectedData())
+  })
+  
+  #generate a popup that names the region and associated number
+  PopUp <- reactive({
+    for(index in 1:ncol(Map@data)){
+      if(identical(SelectedData(), Map@data[index])==T){
+        break()
+      }
+    }
+    
+    paste("<b> Region: ", Map@data$Region_Nam, "</b>", "<br>",
+          "Number: ", formatC(Map@data[[index]], digits = 0, format = "f"))
+  })
+  #add more info in popup by parsing the column header? but don't make this too complicated
+  
+  #generate the basic map
+  output$TZHealthMap <- renderLeaflet({
+    leaflet(Map) %>%    
+    addProviderTiles("OpenStreetMap.Mapnik") %>%
+    setView(lng = 34.8888, lat = -6.3690, zoom = 5) 
+  })
+  
+  #update the fill of the polygons according to selected data
+  observe({    
+        leafletProxy("TZHealthMap", data = Map) %>%   
+        clearShapes() %>%
+        addPolygons(stroke = T,
+                weight = 1,
+                smoothFactor = 0.2,
+                fillOpacity = 0.6,
+                popup = ~PopUp(),
+                color = ~LeafletPalette()(SelectedData())
+          )
+  })
+  
+  #update the legend according to selected data
+  observe({
+    if(1 %in% input$RadioGroup){
+      leafletProxy("TZHealthMap", data = Map) %>%
+        clearControls() %>%
+        addLegend("topright",
+                  pal = LeafletPalette(),
+                  values = range(SelectedData()),
+                  title = "Cases per 100,000 People",
+                  opacity = 1)
+    } else if(2 %in% input$RadioGroup){
+      leafletProxy("TZHealthMap", data = Map) %>%
+        clearControls() %>%
+        addLegend("topright",
+                  pal = LeafletPalette(),
+                  values = range(SelectedData()),
+                  title = "Total People Affected",
+                  opacity = 1)
+    }    
+  })
+}
+
+shinyApp(ui = ui, server = server)
+#app <- shinyApp(ui = ui, server = server)
+
+#deployApp()
+
+#check Shiny Application Layout Guide to get more advanced layout options for ui
+#add img(src = "imagename.png", height = 400, width = 400) for logo or image for ui
+#options(shiny.error = recover)
+#options(shiny.trace = TRUE)
+#shiny::runApp(display.mode="showcase")
+#useful for debugging, but I don't know where in the code this is supposed to go
+#reactive log
+#https://shiny.rstudio.com/articles/debugging.html
+#runApp(app, options(shiny.trace = T))
