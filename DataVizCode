@@ -2,7 +2,7 @@
 #Data to run the code is all in the shared Google Drive folder
 #Cleans census data, cause of death data, diagnosis data
 #Makes Shiny app to display cause of death data
-#App runs at https://dlab.shinyapps.io/TanzaniaHealthOutcomes/
+#App runs at https://cattywampus.shinyapps.io/TanzaniaHealthOutcomes/
 
 library(dplyr)
 library(readxl)
@@ -17,6 +17,8 @@ library(shiny)
 library(gtools)
 library(rsconnect)
 library(DT)
+library(ggplot2)
+library(plotly)
 
 #IMPORT POPULATION DATA 
 
@@ -240,13 +242,70 @@ names(CleanDeath2013Under5) <- NameDiagList
 
 Combined <- rbind(CleanOutDiag2013Under5, CleanOutDiag2013Over5, CleanInDiag2013Under5,
                   CleanInDiag2013Over5, CleanDeath2013Under5, CleanDeath2013Over5)
+Combined[is.na(Combined)] <- 0
+
+CombinedNonAgg <- rbind(CleanOutDiag2013Under5, CleanOutDiag2013Over5, CleanInDiag2013Under5,
+                  CleanInDiag2013Over5, CleanDeath2013Under5, CleanDeath2013Over5)
+
+
+Combined$`Infectious Diseases` <- Combined$Leprosy + Combined$`Rheumatic Fever` + Combined$`Acute Respiratory Infection` +
+  Combined$Pneumonia + Combined$Tuberculosis + Combined$`Diarrheal Disease` + Combined$`HIV/AIDS` +
+  Combined$Hepatitis + Combined$Osteomyelitis + Combined$`Ear Infection` + Combined$`Eye Infections` +
+  Combined$`Skin Infection` + Combined$`Urinary Tract Infection` + Combined$`Genital Discharge Syndrome` +
+  Combined$`Genital Ulcer Disease` + Combined$`Other Sexually Transmitted Infections` + Combined$`Fungal Disease` +
+  Combined$Malaria + Combined$`Intestinal Worms` + Combined$Typanosomiasis + Combined$Schistosomiasis
+  
+Combined$`Parasitic Diseases` <- Combined$`Intestinal Worms` + Combined$Malaria + Combined$Typanosomiasis +
+  Combined$Schistosomiasis
+  
+Combined$`Sexually Transmitted Diseases` <- Combined$`Genital Ulcer Disease` + Combined$`Genital Discharge Syndrome` +
+  Combined$`Other Sexually Transmitted Infections` + Combined$`HIV/AIDS`
+
+Combined$`Respiratory Disease` <- Combined$`Acute Respiratory Infection` + Combined$`Bronchial Asthma` +
+  Combined$Pneumonia + Combined$Tuberculosis + Combined$`Other Respiratory Disease`
+
+Combined$`Circulatory System Disease` <- Combined$`Cardiac Failure` + Combined$Hypertension +
+  Combined$`Other Cardiovascular Disease`
+
+Combined$`Gastro-Intestinal System Disease` <- Combined$`Diarrheal Disease` + Combined$`Gastrointestinal Disease_Noninfectious` +
+  Combined$`Intestinal Worms` + Combined$`Peptic Ulcer` + Combined$Hepatitis
+
+Combined$`Diseases of the Kidney and Urinary Tract` <- Combined$`Kidney Disease_Noninfectious` +
+  Combined$`Urinary Tract Infection`
+  
+Combined$`Endocrine, Nutritional, and Metabolic Diseases and Disorders` <- Combined$`Thyroid Disease` +
+  Combined$`Diabetes Mellitus` + Combined$Malnutrition
+
+Combined$`Musculoskeletal System and Connective Tissue Disorders` <- Combined$Osteomyelitis +
+  Combined$`Joint or Rhematoid Disease` + Combined$`Fractures and Dislocations`
+
+Combined$`Diseases of the Blood` <- Combined$Anemia + Combined$`Sickle Disease` +
+  Combined$`Hematological Disease`
+
+Combined$`Diseases of the Skin` <- Combined$`Skin Infection` + Combined$`Skin Disease_Noninfectious`
+
+Combined$`Diseases of the Eye` <- Combined$`Eye Infections` + Combined$Cataracts + 
+  Combined$Xerophthalmia + Combined$`Eye Disease_Noninfectious`
+
+Combined$`Oral Disease` <- Combined$`Dental Caries` + Combined$`Periodontal Disease` +
+  Combined$`Other Oral Disease`
+
+Combined$`Trauma, Injuries, and Poisonings` <- Combined$`Bites_Snake and Insect` + Combined$Burns +
+  Combined$Poisoning + Combined$`Fractures and Dislocations`
+
+Combined$`Mental Diseases and Disorders` <- Combined$Psychoses + Combined$Neuroses
 
 Long <- Combined %>% 
   gather(Diagnosis, Reported, -Region, -Age, -Status, -Population) %>%
   spread(Status, Reported) 
 Long[is.na(Long)] <- 0
 
-AllDiseases <- as.data.frame(Long %>%
+LongNonAgg <- CombinedNonAgg %>% 
+  gather(Diagnosis, Reported, -Region, -Age, -Status, -Population) %>%
+  spread(Status, Reported) 
+LongNonAgg[is.na(LongNonAgg)] <- 0
+
+AllDiseases <- as.data.frame(LongNonAgg %>%
   group_by(Region, Age) %>%
   summarise(Population = mean(Population), Diagnosis = "All Diseases", Outpatient = sum(Outpatient), Inpatient = sum(Inpatient), Death = sum(Death))
   )
@@ -262,12 +321,12 @@ Stats$AllCases <- Stats$Inpatient+Stats$Outpatient
 Stats$DeathPerDiag <- Stats$Death/Stats$AllCases
 
 #under 5 + over five for combined
-Combined <-Stats %>% 
+AllAge <-Stats %>% 
   group_by(Region, Diagnosis) %>%
   summarise(Population=sum(Population), Death = sum(Death), Inpatient = sum(Inpatient), Outpatient = sum(Outpatient), AllCases = sum(AllCases), DeathPerDiag = sum(DeathPerDiag))
-Combined$Age <- "Combined"
+AllAge$Age <- "Combined"
 
-AllStats <- rbind.data.frame(Stats, Combined)
+AllStats <- rbind.data.frame(Stats, AllAge)
 
 #rename
 AllStatNames <- c("Region", "Age", "Population", "Diagnosis", "Outpatient", 
@@ -284,7 +343,7 @@ AllStats$`DeathPerDiag_Per 100000` <- AllStats$`DeathPerDiag`/AllStats$Populatio
 #Admittance rate (Inpatient/Outpatient)
 #Grouped by disease type
 
-#write.csv(Stats, "DiagnosisAndDeathData.csv")
+write.csv(Stats, "DiagnosisAndDeathData.csv")
 
 
 #removing population
@@ -293,6 +352,8 @@ WideStats <- AllStats %>%
   gather(temp, Prevalence, -Region, -Age, -Diagnosis) %>%  #-Region, -Age, -Status, -Population
   unite(col = Outcome, Age, Diagnosis, temp, sep = "_") %>%
   spread(key = Outcome, value = Prevalence)
+WideStats[is.na(WideStats)] <- 0
+
 
 #VISUALIZATION
 
@@ -322,6 +383,9 @@ identical(MainlandMap@data$Region_Nam, WideStats$Region)
 Map <- append_data(MainlandMap, WideStats, key.shp = "Region_Nam", key.data = "Region")
 
 
+
+
+
 #test <- cbind(Region = Map@data$Region_Nam, fake = Map@data$`Combined_Acute Respiratory Infection_DeathPerDiag`)
 
 #c1 <- c("a", "b", "c")
@@ -330,6 +394,7 @@ Map <- append_data(MainlandMap, WideStats, key.shp = "Region_Nam", key.data = "R
 
 #test1 <-  DT::datatable(test, options = list(order = list(2, 'desc')))
 #test2 <-  DT::datatable(test) %>% setkey(c2)
+
 
 
 #Assembling the map
@@ -343,8 +408,24 @@ ui <- fluidPage(
       #Select disease
       selectInput("DiseaseSelect", 
                   label = "Disease",
-                  choices = DiseaseList <- list("All Diseases" = "All Disease",
-                                                "Acute Respiratory Infection" = "Acute Respiratory Infection", 
+                  choices = DiseaseList <- list(
+                    "Aggregated Diseases" = c("All Diseases" = "All Disease",
+                                                "Infectious Diseases" = "Infectious Diseases",
+                                                "Parasitic Diseases" = "Parasitic Diseases",
+                                                "Sexually Transmitted Diseases" = "Sexually Transmitted Diseases",
+                                                "Respiratory Disease" = "Respiratory Disease",
+                                                "Circulatory System Disease" = "Circulatory System Disease",
+                                                "Gastro-Intestinal System Disease" = "Gastro-Intestinal System Disease",
+                                                "Diseases of the Kidney and Urinary Tract" = "Diseases of the Kidney and Urinary Tract",
+                                                "Endocrine, Nutritional, and Metabolic Diseases and Disorders" = "Endocrine, Nutritional, and Metabolic Diseases and Disorders",
+                                                "Musculoskeletal System and Connective Tissue Disorders" = "Musculoskeletal System and Connective Tissue Disorders",
+                                                "Diseases of the Blood" = "Diseases of the Blood",
+                                                "Diseases of the Skin" = "Diseases of the Skin",
+                                                "Diseases of the Eye" = "Diseases of the Eye",
+                                                "Oral Disease" = "Oral Disease",
+                                                "Trauma, Injuries, and Poisonings" = "Trauma, Injuries, and Poisonings",
+                                                "Mental Diseases and Disorders" = "Mental Diseases and Disorders"),
+                    "Individual Diseases" = c("Acute Respiratory Infection" = "Acute Respiratory Infection", 
                                                 "Bronchial Asthma" = "Bronchial Asthma", 
                                                 "Pneumonia" = "Pneumonia", 
                                                 "Tuberculosis" = "Tuberculosis", 
@@ -399,10 +480,8 @@ ui <- fluidPage(
                                                 "Neuroses" = "Neuroses", 
                                                 "Psychoses" = "Psychoses",
                                                 "Minor Surgical Conditions" = "Minor Surgical Conditions", 
-                                                "Not Diagnosed or Other" = "Not Diagnosed or Other"),
+                                                "Not Diagnosed or Other" = "Not Diagnosed or Other")),
                   selected = 1),
-      #add groups per discussion with Amit
-      #http://shiny.rstudio.com/gallery/option-groups-for-selectize-input.html info here for bolding and grouping ,Maybe "all", "grouped", "individual"
 
       #Select stats to display
       selectInput("StatSelect", 
@@ -424,13 +503,62 @@ ui <- fluidPage(
       radioButtons("RadioGroup",
                    label = "Display",
                    choices = list("Per 100,000 People" = 1, "Total" = 2),
-                   selected = 1)
+                   selected = 1),
+      
+      p("Displayed data are from 2012, sourced from the Tanzanian Ministry of Health through the Government Open Data Portal at",
+        a("http://www.opendata.go.tz/"),
+        ".",
+        br(),
+        br(),
+        br(),
+        br(),
+        br(),
+        br(),
+        br(),
+        br())
     ),
-
+    
     mainPanel(
       leafletOutput("TZHealthMap"), 
-      DT::dataTableOutput("TabVals")
-      )
+      plotOutput("BoxOut", height = "100px"),
+      #plotlyOutput("PlotlyOut"),
+      DT::dataTableOutput("TabVals"),
+      p(strong("Aggregated diseases:"),
+        strong("Infectious diseases:"),
+        "leprosy, rheumatic fever, acute respiratory infection, pneumonia,
+        tuberculosis, diarrheal disease, HIV/AIDS, hepatitis, osteomyelitis,
+        ear infections, eye infections, skin infections, urinary tract infection,
+        genital discharge syndrome, genital ulcer disease, other sexually transmitted 
+        infections, fungal disease, malaria, intestinal worms, typanosomiasis, schistosomiasis",
+        strong("Parasitic diseases:"),
+        "malaria, typanosomiasis, schistosomiasis, intestinal worms;",
+        strong("Sexually transmitted diseases:"),
+        "HIV/AIDS, genital ulcer disease, genital discharge syndrome, other sexually transmitted infections;",
+        strong("Respiratory disease:"),
+        "acute respiratory infection, pneumonia, bronchial asthma, tuberculosis, other respiratory disease;",
+        strong("Circulatory system disease:"),
+        "cardiac failure, hypertension, other cardiovascular disease;",
+        strong("Gastro-Intestinal System Disease:"),
+        "diarrheal disease, gastrointestinal disease (noninfectious), intestinal Worms, peptic ulcer, hepatitis;",
+        strong("Diseases of the Kidney and Urinary Tract:"),
+        "kidney disease (noninfectious), urinary tract infection;",
+        strong("Endocrine, Nutritional, and Metabolic Diseases and Disorders:"),
+        "thyroid disease, diabetes mellitus, malnutrition;",
+        strong("Musculoskeletal System and Connective Tissue Disorders:"),
+        "osteomyelitis, joint or rhematoid disease, fractures and dislocations;",
+        strong("Diseases of the Blood:"),
+        "anemia, sickle disease, other hematological disease;",
+        strong("Diseases of the Skin:"),
+        "skin infection, skin disease (noninfectious);",
+        strong("Diseases of the Eye:"),
+        "eye infections, cataracts, xerophthalmia, eye disease (noninfectious);",
+        strong("Oral Disease:"),
+        "dental caries, periodontal disease, other oral disease;",
+        strong("Trauma, Injuries, and Poisonings:"),
+        "bites (snake and insect), burns, poisoning, fractures and dislocations;",
+        strong("Mental Diseases and Disorders:"),
+        "psychoses, neuroses.")
+    )
   )
 )
 
@@ -460,18 +588,32 @@ server <- function(input, output) {
   })
   
   TableData <- reactive({
-    cbind(Region = Map@data$Region_Nam, SelectedData())
+    temp <- cbind(Rank = rank(SelectedData()), Region = Map@data$Region_Nam, SelectedData())
+#    temp <- temp[order(temp[,1]),]
   })
   
-  output$TabVals <- DT::renderDataTable({
-    DT::datatable(TableData(), 
+
+  SortTableData <- reactive({
+    TableData()[order(TableData()[,1]),]
+  })
+  
+  output$TabVals <- {DT::renderDataTable({
+    if(median(SortTableData()[,3]) > 1) {DT::datatable(SortTableData(), 
                   options = list(pageLength = 25, 
                                  searching = FALSE, 
-                                 #order = list(2, 'asc'), #shows best to worst, make this 'des' (I assume) to show opposite
                                  paging = FALSE),   
                   rownames = FALSE) %>%
-        formatRound(2, digits = 0)
-  })
+        formatRound(3, digits = 0)
+    } else {DT::datatable(SortTableData(), 
+                    options = list(pageLength = 25, 
+                                   searching = FALSE, 
+                                   paging = FALSE),   
+                    rownames = FALSE) %>%
+        formatRound(3, digits = 6)
+    }  
+    })
+  }
+
   #make sure that what is left is only one name, otherwise throw some kind of error
   
   #generate a color palette based on the domain of the selected data
@@ -487,8 +629,21 @@ server <- function(input, output) {
       }
     }
     
-    paste("<b> Region: ", Map@data$Region_Nam, "</b>", "<br>",
+    for(rank in 1:ncol(Map@data)){
+      if(identical(SelectedData(), SelectedData()[rank])==T){
+        break()
+      }
+    }
+    
+    if(Map@data[[index]] > 1){
+      paste("<b> Region: ", Map@data$Region_Nam, "</b>", "<br>",
+          "Rank: ", TableData()$Rank, "<br>",
           "Number: ", formatC(Map@data[[index]], digits = 0, format = "f"))
+    } else {
+      paste("<b> Region: ", Map@data$Region_Nam, "</b>", "<br>",
+            "Rank: ", TableData()$Rank, "<br>",
+            "Number: ", formatC(Map@data[[index]], digits = 3, format = "g"))
+    }
   })
   #add more info in popup by parsing the column header? but don't make this too complicated
   
@@ -532,19 +687,67 @@ server <- function(input, output) {
                   opacity = 1)
     }    
   })
+  
+  
+  theme_custom <- theme(legend.title = element_blank(),
+                        axis.title.y = element_blank(),
+                        axis.title.x = element_text(size = 12),
+                        axis.text.x = element_text(size = 10),
+                        axis.text.y = element_blank(),
+                        panel.background = element_rect(fill = "white"),
+                        panel.grid = element_blank(),
+                        axis.ticks = element_blank(),
+                        legend.position = "none"
+                      )
+  
+  output$BoxOut <- renderPlot({
+    ggplot(TableData(), aes(x = 1, y = SelectedData(), color = SelectedData())) +
+      stat_boxplot(geom = "errorbar", width = 0.03, color = "blue", size = 1) +
+      geom_boxplot(width = 0.03, color = "blue", size = 1, fill = "blue", alpha = 0.2) +
+      geom_point(size = 5, alpha = 0.6) +
+      expand_limits(y = 0) +
+      scale_y_continuous(breaks = c(0, max(ceiling(SelectedData())))) +
+#      scale_color_brewer(palette = "RdYlGn") +
+      scale_color_gradientn(colors = LeafletPalette()(range(SelectedData()))) +
+#      scale_color_hue(l = 90) + 
+      geom_vline(xintercept = 1, color = "black", size = 0.5) +
+      coord_flip() +
+      ylab("Incidence") +
+      theme_custom +
+      theme(aspect.ratio = 0.05) 
+    #the colors don't actually match - hue or saturation must be different
+    #optimize how the box looks, maybe some opaque fill? 
+    #label mean and 1stdev
+    #anything else to make this interpretable
+    #pop up for country? - try plotly (ggplotly)
+  }) 
+  
+  output$PlotlyOut <- renderPlotly({
+    #(y = ~SelectedData(), type = "box") %>%
+    #  add_trace(y = ~SelectedData())
+    
+    #http://jose-coto.com/visual-earth-d3-leaflet
+    
+    #plotly seems to have a problem dealing with the coord_flip(), so I think I need to build this from scratch
+    BoxPlot <- ggplot(TableData(), aes(x = 1, y = SelectedData(), color = SelectedData())) +
+      stat_boxplot(geom = "errorbar", width = 0.03, color = "blue", size = 1) +
+      geom_boxplot(width = 0.03, color = "blue", size = 1, fill = "blue", alpha = 0.2) +
+      geom_point(size = 5, alpha = 0.6) +
+      expand_limits(y=0) +
+      scale_y_continuous(breaks = c(0, max(ceiling(SelectedData())))) +
+      #      scale_color_brewer(palette = "RdYlGn") +
+      scale_color_gradientn(colors = LeafletPalette()(range(SelectedData()))) +
+      #      scale_color_hue(l = 90) + 
+      geom_vline(xintercept = 1, color = "black", size = 0.5) +
+      #coord_flip() +
+      ylab("Incidence") +
+      theme_custom +
+      theme(aspect.ratio = 0.05) 
+    
+    BoxPlotly <- ggplotly(BoxPlot)
+    BoxPlotly
+  })
+
 }
 
 shinyApp(ui = ui, server = server)
-#app <- shinyApp(ui = ui, server = server)
-
-#deployApp()
-
-#check Shiny Application Layout Guide to get more advanced layout options for ui
-#add img(src = "imagename.png", height = 400, width = 400) for logo or image for ui
-#options(shiny.error = recover)
-#options(shiny.trace = TRUE)
-#shiny::runApp(display.mode="showcase")
-#useful for debugging, but I don't know where in the code this is supposed to go
-#reactive log
-#https://shiny.rstudio.com/articles/debugging.html
-#runApp(app, options(shiny.trace = T))
